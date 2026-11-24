@@ -6,8 +6,6 @@
 
 uint64_t get_dock_spaces_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // The arm64e.x1 slice places the dock.spaces load at 0x2fdc0; starting at 0x30000 skips it
-        // and lands on an adjacent global (the mouseMoved: receiver) instead.
         return 0x20000;
     } else if (os_version.majorVersion == 26) {
         return 0x30000;
@@ -44,7 +42,6 @@ uint64_t get_dppm_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_fix_animation_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // Covers 27.0 (0x227508) through 27.2 (0x188fdc) on both arm64e slices.
         return 0x170000;
     } else if (os_version.majorVersion == 26) {
         return 0x250000;
@@ -63,7 +60,6 @@ uint64_t get_fix_animation_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_add_space_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // Covers 27.0 (0x228cbc) through 27.2 (0x18a750) on both arm64e slices.
         return 0x170000;
     } else if (os_version.majorVersion == 26) {
         return 0x250000;
@@ -82,7 +78,6 @@ uint64_t get_add_space_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_remove_space_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // Covers 27.0 (0x18b9a0) through 27.2 (0x12dbcc) on both arm64e slices.
         return 0x120000;
     } else if (os_version.majorVersion == 26) {
         return 0x1e0000;
@@ -101,7 +96,6 @@ uint64_t get_remove_space_offset(NSOperatingSystemVersion os_version) {
 
 uint64_t get_move_space_offset(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // Covers 27.0 (0x18a2b4) through 27.2 (0x12bc40) on both arm64e slices.
         return 0x100000;
     } else if (os_version.majorVersion == 26) {
         return 0x1c0000;
@@ -192,7 +186,6 @@ const char *get_fix_animation_pattern(NSOperatingSystemVersion os_version) {
 
 const char *get_add_space_pattern(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // First instruction is pacibsp (7F 23 03 D5) on arm64e and pacibsppc (FE A7 C1 DA) on arm64e.x1.
         return "?? ?? ?? ?? E1 03 1E AA ?? ?? ?? 97 FE 03 01 AA ?? ?? ?? A9 FD 43 01 91 F3 03 14 AA F5 03 00 AA 96 8E 43 F8";
     } else if (os_version.majorVersion == 26) {
         if (os_version.minorVersion >= 4) {
@@ -232,8 +225,6 @@ const char *get_remove_space_pattern(NSOperatingSystemVersion os_version) {
 
 const char *get_move_space_pattern(NSOperatingSystemVersion os_version) {
     if (os_version.majorVersion == 27) {
-        // NOTE: Not the Tahoe mover; the Swift handler the Dock runs when WindowManager.app reports a
-        // SpaceChange.movedToDisplay, called on the Dock spaces controller (see space_move_to_display_index).
         return "?? ?? ?? ?? E5 03 1E AA ?? ?? ?? 97 FE 03 05 AA FD 7B ?? A9 FD ?? ?? 91 F6 03 14 AA F7 03 04 AA F4 03 03 AA F8 03 02 AA F9 03 01 AA E1 03 16 AA";
     } else if (os_version.majorVersion == 26) {
         return "7F 23 03 D5 E3 03 1E AA ?? ?? ?? 97 FE 03 03 AA FD 7B ?? A9 FD ?? ?? 91 F6 03 14 AA";

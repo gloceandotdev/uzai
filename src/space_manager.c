@@ -664,6 +664,8 @@ uint64_t space_manager_active_space(void)
 
 void space_manager_move_window_list_to_space(uint64_t sid, uint32_t *window_list, int window_count)
 {
+    if (workspace_is_macos_goldengate() && scripting_addition_move_window_list_to_space(sid, window_list, window_count)) return;
+
     if (SLSPerformAsynchronousBridgedWindowManagementOperation) {
         CFArrayRef window_list_ref = cfarray_of_cfnumbers(window_list, sizeof(uint32_t), window_count, kCFNumberSInt32Type);
         Class cls = objc_getClass("SLSBridgedMoveWindowsToManagedSpaceOperation");
@@ -685,6 +687,8 @@ void space_manager_move_window_list_to_space(uint64_t sid, uint32_t *window_list
 
 void space_manager_move_window_to_space(uint64_t sid, struct window *window)
 {
+    if (workspace_is_macos_goldengate() && scripting_addition_move_window_to_space(sid, window->id)) return;
+
     if (SLSPerformAsynchronousBridgedWindowManagementOperation) {
         CFArrayRef window_list_ref = cfarray_of_cfnumbers(&window->id, sizeof(uint32_t), 1, kCFNumberSInt32Type);
         Class cls = objc_getClass("SLSBridgedMoveWindowsToManagedSpaceOperation");

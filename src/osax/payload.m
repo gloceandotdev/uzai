@@ -8,6 +8,7 @@
 #include <mach/vm_page_size.h>
 #include <objc/message.h>
 #include <objc/runtime.h>
+#include <malloc/malloc.h>
 
 #include <CoreGraphics/CoreGraphics.h>
 #include <sys/types.h>
@@ -89,12 +90,6 @@ static uint64_t set_front_window_fp;
 static uint64_t animation_time_addr;
 static bool macOSSequoia;
 static bool macOSGoldenGate;
-
-//
-// NOTE: Since macOS 27, move_space_fp is a Swift method of the Dock spaces controller and takes
-// the display UUID as a Swift String. Strings are created with String(cString:) and released
-// through the Swift runtime; both are resolved when the payload loads.
-//
 
 struct swift_string { uint64_t bits; void *object; };
 typedef struct swift_string (*swift_string_create_call)(const char *cstring) __attribute__((swiftcall));
@@ -210,6 +205,46 @@ loop:
     return addr;
 }
 
+static uint64_t hex_find_next(uint64_t addr, uint64_t end, const char *pattern)
+{
+    uint64_t length = (strlen(pattern) + 1) / 3;
+    uint8_t value[length];
+    bool wildcard[length];
+
+    for (uint64_t i = 0; i < length; ++i) {
+        wildcard[i] = pattern[i*3] == '?';
+        value[i] = wildcard[i] ? 0 : strtoul(pattern + i*3, NULL, 16);
+    }
+
+    for (; addr + length <= end; addr += 4) {
+        uint64_t i = 0;
+        while (i < length && (wildcard[i] || value[i] == ((uint8_t *) addr)[i])) ++i;
+        if (i == length) return addr;
+    }
+
+    return 0;
+}
+
+static uint64_t hex_find_unique(uint64_t baseaddr, const char *pattern)
+{
+    unsigned long size = 0;
+    uint64_t text = (uint64_t) getsectiondata((const struct mach_header_64 *) baseaddr, "__TEXT", "__text", &size);
+    if (!text || !pattern) return 0;
+
+    uint64_t match = hex_find_next(text, text + size, pattern);
+    if (match && hex_find_next(match + 4, text + size, pattern)) {
+        NSLog(@"[yabai-sa] pattern is ambiguous, ignoring: %s", pattern);
+        return 0;
+    }
+
+    return match;
+}
+
+static uint64_t find_pattern(uint64_t baseaddr, uint64_t offset, const char *pattern)
+{
+    return macOSGoldenGate ? hex_find_unique(baseaddr, pattern) : hex_find_seq(baseaddr + offset, pattern);
+}
+
 #if __arm64__
 uint64_t decode_adrp_add(uint64_t addr, uint64_t offset)
 {
@@ -229,6 +264,40 @@ uint64_t decode_adrp_add(uint64_t addr, uint64_t offset)
     }
 
     return (offset & 0xfffffffffffff000) + value_64 + imm12;
+}
+#endif
+
+#if __arm64__
+
+static id find_dock_spaces(uint64_t baseaddr, const char *pattern)
+{
+    unsigned long text_size = 0, data_size = 0, common_size = 0, bss_size = 0;
+    const struct mach_header_64 *header = (const struct mach_header_64 *) baseaddr;
+    uint64_t text   = (uint64_t) getsectiondata(header, "__TEXT", "__text", &text_size);
+    uint64_t data   = (uint64_t) getsectiondata(header, "__DATA", "__data", &data_size);
+    uint64_t common = (uint64_t) getsectiondata(header, "__DATA", "__common", &common_size);
+    uint64_t bss    = (uint64_t) getsectiondata(header, "__DATA", "__bss", &bss_size);
+
+    Class cls = objc_getClass("Spaces");
+    if (!text || !cls) return nil;
+
+    uint64_t end = text + text_size;
+    for (uint64_t addr = hex_find_next(text, end, pattern); addr; addr = hex_find_next(addr + 4, end, pattern)) {
+        uint64_t global = baseaddr + decode_adrp_add(addr, addr - baseaddr);
+        if (!((data   && global >= data   && global + 8 <= data   + data_size) ||
+              (common && global >= common && global + 8 <= common + common_size) ||
+              (bss    && global >= bss    && global + 8 <= bss    + bss_size))) continue;
+
+        id object = *(id *) global;
+        if (malloc_size((const void *) object) == 0) continue;
+
+        if (object_getClass(object) == cls) {
+            NSLog(@"[yabai-sa] (0x%llx) dock.spaces found at address 0x%llX (0x%llx)", baseaddr, global, global - baseaddr);
+            return [object retain];
+        }
+    }
+
+    return nil;
 }
 #endif
 
@@ -255,10 +324,10 @@ static bool verify_os_version(NSOperatingSystemVersion os_version)
         return true; // Tahoe preview
     } else if (os_version.majorVersion == 27) {
 
-        NSLog(@"[yabai-sa] Detected Golden Gate (26A5353q, 26A5368g, 26A5378j, 26A5378n, 26A5388g, 26A5406e, 26A5416b, 26A428, 26A434, 26B123)... flagging 'macOSSequoia=true.'");
+        NSLog(@"[yabai-sa] Detected Golden Gate... flagging 'macOSSequoia=true.'");
         macOSSequoia = true;
         macOSGoldenGate = true;
-        return true; // Golden Gate (26A5353q, 26A5368g, 26A5378j, 26A5378n, 26A5388g, 26A5406e, 26A5416b, 26A428, 26A434, 26B123)
+        return true;
     }
 
     NSLog(@"[yabai-sa] spaces functionality is only supported on macOS Big Sur 11.0.0+, Monterey 12.0.0+, Ventura 13.0.0+, Sonoma 14.0.0+, and Sequoia 15.0");
@@ -279,10 +348,10 @@ static bool verify_os_version(NSOperatingSystemVersion os_version)
         return true; // Tahoe preview
     } else if (os_version.majorVersion == 27) {
 
-        NSLog(@"[yabai-sa] Detected Golden Gate (26A5353q, 26A5368g, 26A5378j, 26A5378n, 26A5388g, 26A5406e, 26A5416b, 26A428, 26A434, 26B123)... flagging 'macOSSequoia=true.'");
+        NSLog(@"[yabai-sa] Detected Golden Gate... flagging 'macOSSequoia=true.'");
         macOSSequoia = true;
         macOSGoldenGate = true;
-        return true; // Golden Gate (26A5353q, 26A5368g, 26A5378j, 26A5378n, 26A5388g, 26A5406e, 26A5416b, 26A428, 26A434, 26B123)
+        return true;
     }
 
     NSLog(@"[yabai-sa] spaces functionality is only supported on macOS Monterey 12.0.0+, and Ventura 13.0.0+, Sonoma 14.0.0+, and Sequoia 15.0");
@@ -291,13 +360,8 @@ static bool verify_os_version(NSOperatingSystemVersion os_version)
     return false;
 }
 
-static void init_instances()
+static void init_globals(uint64_t baseaddr, NSOperatingSystemVersion os_version)
 {
-    NSOperatingSystemVersion os_version = [[NSProcessInfo processInfo] operatingSystemVersion];
-    if (!verify_os_version(os_version)) return;
-
-    uint64_t baseaddr = static_base_address() + image_slide();
-
     uint64_t dock_spaces_addr = hex_find_seq(baseaddr + get_dock_spaces_offset(os_version), get_dock_spaces_pattern(os_version));
     if (dock_spaces_addr == 0) {
         dock_spaces = nil;
@@ -317,7 +381,7 @@ static void init_instances()
     uint64_t dppm_addr = hex_find_seq(baseaddr + get_dppm_offset(os_version), get_dppm_pattern(os_version));
     if (dppm_addr == 0) {
         dp_desktop_picture_manager = nil;
-        if (!macOSGoldenGate) NSLog(@"[yabai-sa] could not locate pointer to dppm! moving spaces will not work!");
+        NSLog(@"[yabai-sa] could not locate pointer to dppm! moving spaces will not work!");
     } else {
 #ifdef __x86_64__
         uint32_t dppm_offset = *(int32_t *)dppm_addr;
@@ -349,8 +413,27 @@ static void init_instances()
         }
 #endif
     }
+}
 
-    uint64_t add_space_addr = hex_find_seq(baseaddr + get_add_space_offset(os_version), get_add_space_pattern(os_version));
+static void init_instances()
+{
+    NSOperatingSystemVersion os_version = [[NSProcessInfo processInfo] operatingSystemVersion];
+    if (!verify_os_version(os_version)) return;
+
+    uint64_t baseaddr = static_base_address() + image_slide();
+
+#if __arm64__
+    if (macOSGoldenGate) {
+        dock_spaces = find_dock_spaces(baseaddr, get_dock_spaces_pattern(os_version));
+        if (dock_spaces == nil) NSLog(@"[yabai-sa] could not locate pointer to dock.spaces! spaces functionality will not work!");
+    } else {
+        init_globals(baseaddr, os_version);
+    }
+#else
+    init_globals(baseaddr, os_version);
+#endif
+
+    uint64_t add_space_addr = find_pattern(baseaddr, get_add_space_offset(os_version), get_add_space_pattern(os_version));
     if (add_space_addr == 0x0) {
         NSLog(@"[yabai-sa] failed to get pointer to addSpace function..");
         add_space_fp = 0;
@@ -363,7 +446,7 @@ static void init_instances()
 #endif
     }
 
-    uint64_t remove_space_addr = hex_find_seq(baseaddr + get_remove_space_offset(os_version), get_remove_space_pattern(os_version));
+    uint64_t remove_space_addr = find_pattern(baseaddr, get_remove_space_offset(os_version), get_remove_space_pattern(os_version));
     if (remove_space_addr == 0x0) {
         NSLog(@"[yabai-sa] failed to get pointer to removeSpace function..");
         remove_space_fp = 0;
@@ -376,7 +459,7 @@ static void init_instances()
 #endif
     }
 
-    uint64_t move_space_addr = hex_find_seq(baseaddr + get_move_space_offset(os_version), get_move_space_pattern(os_version));
+    uint64_t move_space_addr = find_pattern(baseaddr, get_move_space_offset(os_version), get_move_space_pattern(os_version));
     if (move_space_addr == 0x0) {
         NSLog(@"[yabai-sa] failed to get pointer to moveSpace function..");
         move_space_fp = 0;
@@ -398,9 +481,9 @@ static void init_instances()
         }
     }
 
-    uint64_t set_front_window_addr = hex_find_seq(baseaddr + get_set_front_window_offset(os_version), get_set_front_window_pattern(os_version));
+    uint64_t set_front_window_addr = macOSGoldenGate ? 0 : hex_find_seq(baseaddr + get_set_front_window_offset(os_version), get_set_front_window_pattern(os_version));
     if (set_front_window_addr == 0x0) {
-        NSLog(@"[yabai-sa] failed to get pointer to setFrontWindow function..");
+        if (!macOSGoldenGate) NSLog(@"[yabai-sa] failed to get pointer to setFrontWindow function..");
         set_front_window_fp = 0;
     } else {
         NSLog(@"[yabai-sa] (0x%llx) setFrontWindow found at address 0x%llX (0x%llx)", baseaddr, set_front_window_addr, set_front_window_addr - baseaddr);
@@ -411,7 +494,7 @@ static void init_instances()
 #endif
     }
 
-    animation_time_addr = hex_find_seq(baseaddr + get_fix_animation_offset(os_version), get_fix_animation_pattern(os_version));
+    animation_time_addr = find_pattern(baseaddr, get_fix_animation_offset(os_version), get_fix_animation_pattern(os_version));
     if (animation_time_addr == 0x0) {
         NSLog(@"[yabai-sa] failed to get pointer to animation-time..");
     } else {
@@ -467,6 +550,8 @@ static inline id display_space_for_display_uuid(CFStringRef display_uuid)
             id display_source_space = get_ivar_value(display_space, "_currentSpace");
             uint64_t sid = get_space_id(display_source_space);
             CFStringRef uuid = SLSCopyManagedDisplayForSpace(SLSMainConnectionID(), sid);
+            if (!uuid) continue;
+
             bool match = CFEqual(uuid, display_uuid);
             CFRelease(uuid);
             if (match) {
@@ -493,14 +578,6 @@ static inline id display_space_for_space_with_id(uint64_t space_id)
     return nil;
 }
 
-//
-// NOTE: Since macOS 27, Mission Control runs in WindowManager.app. It moves a space in WindowServer
-// and then reports a SpaceChange.movedToDisplay to the Dock, whose handler brings the Dock's own
-// model of the spaces in line. The payload does the same: SLSMoveManagedSpaceToDisplayIndex, then
-// that handler on the main queue, where the Dock applies those reports. When the handler rejects
-// the change, the Dock rebuilds its spaces from WindowServer with refreshSpacesIfNeeded; so do we.
-//
-
 typedef uint64_t (*space_moved_to_display_call)(uint64_t space_id, uint64_t display_uuid_bits, void *display_uuid_object, uint64_t after_space_id, uint8_t after_space_is_nil, void *dock_spaces __attribute__((swift_context))) __attribute__((swiftcall));
 
 static bool space_move_index(CFStringRef source_display_uuid, CFStringRef dest_display_uuid, uint64_t space_id, uint64_t after_space_id, uint32_t *index)
@@ -522,11 +599,6 @@ static bool space_move_index(CFStringRef source_display_uuid, CFStringRef dest_d
 
         CFArrayRef spaces_ref = CFDictionaryGetValue(display_ref, CFSTR("Spaces"));
         if (!spaces_ref) continue;
-
-        //
-        // NOTE: The index is the position space_id takes after the move, counted among the other
-        // spaces of the destination display. A move must also leave a user space on the source.
-        //
 
         uint32_t position = 0;
         for (CFIndex j = 0; j < CFArrayGetCount(spaces_ref); ++j) {
@@ -606,11 +678,6 @@ static void do_space_move(char *message)
     id source_display_space = display_space_for_display_uuid(source_display_uuid);
     id dest_display_space = display_space_for_display_uuid(dest_display_uuid);
 
-    //
-    // NOTE: The Dock expects every display to have a current space; never store nil there,
-    // e.g. when source_prev_space_id is not a space of the source display.
-    //
-
     if (source_prev_space_id) {
         id new_source_space = space_for_display_with_id(source_display_uuid, source_prev_space_id);
         if (!new_source_space) goto out;
@@ -664,10 +731,17 @@ static void do_space_destroy(char *message)
     unpack(space_id);
 
     CFStringRef display_uuid = SLSCopyManagedDisplayForSpace(SLSMainConnectionID(), space_id);
+    if (!display_uuid) return;
+
     uint64_t active_space_id = SLSManagedDisplayGetCurrentSpace(SLSMainConnectionID(), display_uuid);
 
     id space = space_for_display_with_id(display_uuid, space_id);
     id display_space = display_space_for_display_uuid(display_uuid);
+
+    if (space == nil || display_space == nil) {
+        CFRelease(display_uuid);
+        return;
+    }
 
     dispatch_sync(dispatch_get_main_queue(), ^{
         ((remove_space_call) remove_space_fp)(space, display_space, dock_spaces, space_id, space_id);
@@ -690,12 +764,16 @@ static void do_space_create(char *message)
     unpack(space_id);
 
     CFStringRef __block display_uuid = SLSCopyManagedDisplayForSpace(SLSMainConnectionID(), space_id);
+    if (!display_uuid) return;
+
     dispatch_sync(dispatch_get_main_queue(), ^{
-        id new_space = macOSSequoia
-                     ? [[objc_getClass("ManagedSpace") alloc] init]
-                     : [[objc_getClass("Dock.ManagedSpace") alloc] init];
         id display_space = display_space_for_display_uuid(display_uuid);
-        asm__call_add_space(new_space, display_space, add_space_fp);
+        if (display_space != nil) {
+            id new_space = macOSSequoia
+                         ? [[objc_getClass("ManagedSpace") alloc] init]
+                         : [[objc_getClass("Dock.ManagedSpace") alloc] init];
+            asm__call_add_space(new_space, display_space, add_space_fp);
+        }
         CFRelease(display_uuid);
     });
 }
@@ -709,9 +787,10 @@ static void do_space_focus(char *message)
 
     if (dest_space_id) {
         CFStringRef dest_display = SLSCopyManagedDisplayForSpace(SLSMainConnectionID(), dest_space_id);
+        if (!dest_display) return;
+
         id source_space;
         if (macOSSequoia && ![dock_spaces respondsToSelector:@selector(currentSpaceForDisplayUUID:)]) {
-            // NOTE: macOS 27.2 replaced currentSpaceForDisplayUUID: with currentSpaceForDisplay:, which takes a CGDirectDisplayID.
             unsigned dest_display_id = ((unsigned (*)(id, SEL, uint64_t)) objc_msgSend)(dock_spaces, @selector(displayForSPID:), dest_space_id);
             source_space = ((id (*)(id, SEL, unsigned)) objc_msgSend)(dock_spaces, @selector(currentSpaceForDisplay:), dest_display_id);
         } else {

@@ -4,6 +4,7 @@ bool workspace_event_handler_begin(void **context)
 #define SUPPORT_MACOS_VERSION(name, major_version) _workspace_is_macos_version_##name = version.majorVersion == major_version;
     SUPPORTED_MACOS_VERSION_LIST
 #undef SUPPORT_MACOS_VERSION
+    if (version.majorVersion > 27) _workspace_is_macos_version_goldengate = true;
 
     workspace_context *ws_context = [workspace_context alloc];
     if (!ws_context) return false;

@@ -271,12 +271,7 @@ static uint32_t scripting_addition_required_attrib(void)
 {
     NSOperatingSystemVersion os_version = [[NSProcessInfo processInfo] operatingSystemVersion];
 
-    //
-    // NOTE: macOS 27.2 removed DPDesktopPictureManager, whose work the macOS 27 move_space handler
-    // now covers, and the CoreDockWindows message behind setFrontWindow, which yabai does not use.
-    //
-
-    if (os_version.majorVersion == 27 && os_version.minorVersion >= 2) {
+    if (os_version.majorVersion == 27) {
         return OSAX_ATTRIB_ALL & ~(OSAX_ATTRIB_DPPM | OSAX_ATTRIB_SET_WINDOW);
     }
 

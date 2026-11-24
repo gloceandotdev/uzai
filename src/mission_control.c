@@ -8,6 +8,9 @@ static CONNECTION_CALLBACK(connection_handler)
 {
     if (type == 1204) {
         event_loop_post(&g_event_loop, MISSION_CONTROL_ENTER, NULL, 0);
+    } else if (type == 1325) {
+        uint64_t sid; memcpy(&sid, data, sizeof(uint64_t));
+        event_loop_post(&g_event_loop, MISSION_CONTROL_CHECK_FOR_ENTER, (void *) (intptr_t) sid, 0);
     } else if (type == 1327) {
         uint64_t sid; memcpy(&sid, data, sizeof(uint64_t));
         event_loop_post(&g_event_loop, SLS_SPACE_CREATED, (void *) (intptr_t) sid , 0);
@@ -103,6 +106,35 @@ void mission_control_unobserve(void)
         CFRelease(g_mission_control_observer.observer_ref);
         CFRelease(g_mission_control_observer.ref);
     }
+}
+
+static bool mission_control_overlay_is_visible(void)
+{
+    bool result = false;
+
+    CFArrayRef window_list = CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, 0);
+    if (!window_list) return false;
+
+    int window_count = CFArrayGetCount(window_list);
+    for (int i = 0; i < window_count; ++i) {
+        CFDictionaryRef dictionary = CFArrayGetValueAtIndex(window_list, i);
+
+        CFStringRef owner = CFDictionaryGetValue(dictionary, kCGWindowOwnerName);
+        if (!owner || !CFEqual(CFSTR("WindowManager"), owner)) continue;
+
+        CFNumberRef layer_ref = CFDictionaryGetValue(dictionary, kCGWindowLayer);
+        if (!layer_ref) continue;
+
+        uint64_t layer = 0;
+        CFNumberGetValue(layer_ref, kCFNumberSInt64Type, &layer);
+        if (layer == 19) {
+            result = true;
+            break;
+        }
+    }
+
+    CFRelease(window_list);
+    return result;
 }
 
 static inline bool mission_control_is_active(void)
